@@ -1,10 +1,27 @@
 import { Document, Paragraph, TextRun, HeadingLevel, Packer } from 'docx';
-import { db, collection, doc, setDoc, getDocs, deleteDoc } from './firebase';
+import { neon } from '@neondatabase/serverless';
 
 const STORAGE_KEY = 'cosmonotes_data_v1';
+const USER_KEY = 'cosmonotes_active_user';
 const DEFAULT_ENCODED = 'QVEuQWI4Uk42SzZQdGxLWDBvanlRdWR4MG5iSG9MNmhVYVZzOFFLdXdWdkNDX1VManhZMXc=';
 
+// Connessione Neon Cloud Database
+const DB_URL = 'postgresql://neondb_owner:npg_WNRz2nw4GPCY@ep-quiet-king-a6datcmc-pooler.us-west-2.aws.neon.tech/neondb?sslmode=require';
+const sql = neon(DB_URL);
+
 export const storageClient = {
+  getActiveUser: () => {
+    return localStorage.getItem(USER_KEY) || null;
+  },
+
+  setActiveUser: (email) => {
+    if (email) {
+      localStorage.setItem(USER_KEY, email.trim().toLowerCase());
+    } else {
+      localStorage.removeItem(USER_KEY);
+    }
+  },
+
   getData: () => {
     try {
       const data = localStorage.getItem(STORAGE_KEY);
@@ -33,23 +50,19 @@ export const storageClient = {
     return storageClient.getData().notes || [];
   },
 
-  // Sincronizza note dal Cloud per l'utente corrente
-  syncFromCloud: async (userId) => {
-    if (!userId) return storageClient.getAllNotes();
-    try {
-      const notesCol = collection(db, 'users', userId, 'notes');
-      const snapshot = await getDocs(notesCol);
-      const cloudNotes = [];
-      snapshot.forEach(d => {
-        cloudNotes.push(d.data());
-      });
+  // Sincronizza note dal Cloud per l'utente attivo
+  syncFromCloud: async (userEmail = null) => {
+    const user = userEmail || storageClient.getActiveUser();
+    if (!user) return storageClient.getAllNotes();
 
-      cloudNotes.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    try {
+      const rows = await sql`SELECT data FROM notes WHERE user_id = ${user.trim().toLowerCase()} ORDER BY updated_at DESC`;
+      const cloudNotes = rows.map(r => r.data).filter(Boolean);
 
       const data = storageClient.getData();
       data.notes = cloudNotes;
 
-      // Aggiorna topics
+      // Ricalcola argomenti tematici
       const topicMap = {};
       data.notes.forEach(n => {
         const t = n.topic || 'Generale';
@@ -75,7 +88,8 @@ export const storageClient = {
     }
   },
 
-  saveNote: async (note, userId = null) => {
+  saveNote: async (note, userEmail = null) => {
+    const user = userEmail || storageClient.getActiveUser();
     const data = storageClient.getData();
     const index = data.notes.findIndex(n => n.id === note.id);
     const updatedNote = {
@@ -110,11 +124,15 @@ export const storageClient = {
 
     storageClient.saveData(data);
 
-    // Salva sul Cloud Firestore se loggato
-    if (userId) {
+    // Salva nel Cloud Database
+    if (user) {
       try {
-        const noteDoc = doc(db, 'users', userId, 'notes', note.id);
-        await setDoc(noteDoc, updatedNote);
+        const userId = user.trim().toLowerCase();
+        await sql`
+          INSERT INTO notes (id, user_id, data, updated_at) 
+          VALUES (${note.id}, ${userId}, ${JSON.stringify(updatedNote)}, NOW())
+          ON CONFLICT (id) DO UPDATE SET data = ${JSON.stringify(updatedNote)}, updated_at = NOW()
+        `;
       } catch (err) {
         console.warn('Cloud save fallback to local:', err.message);
       }
@@ -123,7 +141,8 @@ export const storageClient = {
     return updatedNote;
   },
 
-  deleteNote: async (noteId, userId = null) => {
+  deleteNote: async (noteId, userEmail = null) => {
+    const user = userEmail || storageClient.getActiveUser();
     const data = storageClient.getData();
     data.notes = data.notes.filter(n => n.id !== noteId);
     
@@ -147,10 +166,10 @@ export const storageClient = {
 
     storageClient.saveData(data);
 
-    if (userId) {
+    if (user) {
       try {
-        const noteDoc = doc(db, 'users', userId, 'notes', noteId);
-        await deleteDoc(noteDoc);
+        const userId = user.trim().toLowerCase();
+        await sql`DELETE FROM notes WHERE id = ${noteId} AND user_id = ${userId}`;
       } catch (err) {
         console.warn('Cloud delete fallback to local:', err.message);
       }

@@ -12,7 +12,7 @@ import {
   LogOut,
   ShieldCheck,
   Cloud,
-  CloudCheck
+  RefreshCw
 } from 'lucide-react';
 
 import Constellation2D from './components/Constellation2D';
@@ -26,12 +26,12 @@ import AuthModal from './components/AuthModal';
 
 import { storageClient } from './services/storageClient';
 import { processTextNoteClient, processAudioNoteClient } from './services/geminiClient';
-import { auth, onAuthStateChanged, signOut } from './services/firebase';
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(() => storageClient.getActiveUser());
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const [notes, setNotes] = useState([]);
   const [topics, setTopics] = useState([]);
@@ -59,44 +59,30 @@ export default function App() {
   };
 
   const refreshData = useCallback(async () => {
-    if (currentUser) {
-      await storageClient.syncFromCloud(currentUser.uid);
+    setIsSyncing(true);
+    try {
+      if (currentUser) {
+        await storageClient.syncFromCloud(currentUser);
+      }
+      const graph = storageClient.getGraphData();
+      const notesList = storageClient.getAllNotes();
+      setGraphData(graph);
+      setTopics(graph.topics || []);
+      setNotes(notesList);
+    } finally {
+      setIsSyncing(false);
     }
-    const graph = storageClient.getGraphData();
-    const notesList = storageClient.getAllNotes();
-    setGraphData(graph);
-    setTopics(graph.topics || []);
-    setNotes(notesList);
   }, [currentUser]);
 
-  // Listen to Firebase Auth state
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user);
-      if (user) {
-        storageClient.syncFromCloud(user.uid).then(() => {
-          const graph = storageClient.getGraphData();
-          const notesList = storageClient.getAllNotes();
-          setGraphData(graph);
-          setTopics(graph.topics || []);
-          setNotes(notesList);
-        });
-      } else {
-        const graph = storageClient.getGraphData();
-        const notesList = storageClient.getAllNotes();
-        setGraphData(graph);
-        setTopics(graph.topics || []);
-        setNotes(notesList);
-      }
-    });
-    return () => unsubscribe();
-  }, []);
+    refreshData();
+  }, [refreshData]);
 
-  const handleLogout = async () => {
-    await signOut(auth);
+  const handleLogout = () => {
+    storageClient.setActiveUser(null);
     setCurrentUser(null);
     setShowUserMenu(false);
-    showToast('🚪 Disconnesso dal Cloud');
+    showToast('🚪 Disconnesso dalla sincronizzazione');
     refreshData();
   };
 
@@ -121,13 +107,13 @@ export default function App() {
         createdAt: new Date().toISOString()
       };
 
-      await storageClient.saveNote(newNote, currentUser?.uid);
-      showToast('✨ Appunto vocale elaborato e sincronizzato!');
+      await storageClient.saveNote(newNote, currentUser);
+      showToast('✨ Appunto vocale elaborato dall\'AI e sincronizzato!');
       setShowVoiceModal(false);
       await refreshData();
       setSelectedNote(newNote);
     } catch (e) {
-      showToast(`❌ Errore AI: ${e.message || 'Errore durante l\'elaborazione'}`);
+      showToast(`❌ Errore: ${e.message || 'Errore durante l\'elaborazione'}`);
     } finally {
       setIsProcessing(false);
     }
@@ -154,13 +140,13 @@ export default function App() {
         createdAt: new Date().toISOString()
       };
 
-      await storageClient.saveNote(newNote, currentUser?.uid);
-      showToast('✨ Appunto inserito e sincronizzato!');
+      await storageClient.saveNote(newNote, currentUser);
+      showToast('✨ Appunto salvato, sintetizzato e sincronizzato!');
       setShowTextModal(false);
       await refreshData();
       setSelectedNote(newNote);
     } catch (e) {
-      showToast(`❌ Errore AI: ${e.message || 'Errore durante l\'elaborazione'}`);
+      showToast(`❌ Errore: ${e.message || 'Errore durante l\'elaborazione'}`);
     } finally {
       setIsProcessing(false);
     }
@@ -169,7 +155,7 @@ export default function App() {
   // Handle Delete Note
   const handleDeleteNote = async (noteId) => {
     if (!window.confirm('Sei sicuro di voler eliminare questo appunto?')) return;
-    await storageClient.deleteNote(noteId, currentUser?.uid);
+    await storageClient.deleteNote(noteId, currentUser);
     showToast('🗑️ Appunto eliminato');
     if (selectedNote?.id === noteId) setSelectedNote(null);
     await refreshData();
@@ -300,26 +286,34 @@ export default function App() {
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-800/60 text-cyan-300 text-xs font-semibold transition"
               >
                 <div className="w-5 h-5 rounded-full bg-cyan-400/20 flex items-center justify-center text-[10px] font-bold text-cyan-300">
-                  {currentUser.email ? currentUser.email[0].toUpperCase() : 'U'}
+                  {currentUser[0].toUpperCase()}
                 </div>
-                <span className="max-w-[80px] sm:max-w-[120px] truncate hidden sm:inline">{currentUser.displayName || currentUser.email}</span>
+                <span className="max-w-[80px] sm:max-w-[120px] truncate hidden sm:inline">{currentUser}</span>
+                {isSyncing && <RefreshCw className="w-3 h-3 animate-spin text-cyan-400" />}
               </button>
 
               {showUserMenu && (
-                <div className="absolute right-0 top-11 w-60 glass-panel rounded-2xl border border-slate-700 shadow-2xl p-2 z-50 animate-fadeIn">
+                <div className="absolute right-0 top-11 w-64 glass-panel rounded-2xl border border-slate-700 shadow-2xl p-2 z-50 animate-fadeIn">
                   <div className="px-3 py-2 border-b border-slate-800">
-                    <p className="text-[11px] text-slate-400">Account Cloud attivo:</p>
-                    <p className="text-xs font-bold text-cyan-300 truncate">{currentUser.email}</p>
+                    <p className="text-[11px] text-slate-400">Account Sincronizzato:</p>
+                    <p className="text-xs font-bold text-cyan-300 truncate">{currentUser}</p>
                     <p className="text-[10px] text-emerald-400 flex items-center gap-1 mt-1 font-medium">
-                      <ShieldCheck className="w-3 h-3" /> Sincronizzato con Cellulare & PC
+                      <ShieldCheck className="w-3 h-3" /> Note attive su Cellulare & PC
                     </p>
                   </div>
                   <button
+                    onClick={() => { refreshData(); setShowUserMenu(false); showToast('🔄 Sincronizzazione aggiornata!'); }}
+                    className="w-full mt-1 flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-cyan-300 hover:bg-cyan-950/40 transition"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Sincronizza adesso</span>
+                  </button>
+                  <button
                     onClick={handleLogout}
-                    className="w-full mt-1 flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-rose-300 hover:bg-rose-950/40 transition"
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-rose-300 hover:bg-rose-950/40 transition"
                   >
                     <LogOut className="w-3.5 h-3.5" />
-                    <span>Esci dall'account</span>
+                    <span>Disconnetti account</span>
                   </button>
                 </div>
               )}
@@ -329,7 +323,7 @@ export default function App() {
               onClick={() => setShowAuthModal(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-space-800 hover:bg-space-700 border border-cyan-500/50 text-cyan-300 text-xs font-bold transition shadow-sm"
             >
-              <LogIn className="w-3.5 h-3.5" />
+              <Cloud className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Sincronizza Cloud</span>
             </button>
           )}
@@ -373,9 +367,9 @@ export default function App() {
       {showAuthModal && (
         <AuthModal
           onClose={() => setShowAuthModal(false)}
-          onAuthSuccess={(user) => {
-            setCurrentUser(user);
-            showToast(`👋 Benvenuto, ${user.displayName || user.email}! I tuoi appunti sono sincronizzati.`);
+          onAuthSuccess={(email) => {
+            setCurrentUser(email);
+            showToast(`👋 Benvenuto ${email}! Note sincronizzate in Cloud.`);
             refreshData();
           }}
         />
@@ -417,7 +411,7 @@ export default function App() {
           onDelete={handleDeleteNote}
           existingTopics={topics}
           onUpdate={async (updated) => {
-            await storageClient.saveNote(updated, currentUser?.uid);
+            await storageClient.saveNote(updated, currentUser);
             setSelectedNote(updated);
             await refreshData();
             showToast('💾 Appunto aggiornato e sincronizzato!');
