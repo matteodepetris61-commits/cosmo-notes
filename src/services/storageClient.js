@@ -1,4 +1,5 @@
 import { Document, Paragraph, TextRun, HeadingLevel, Packer } from 'docx';
+import { db, collection, doc, setDoc, getDocs, deleteDoc } from './firebase';
 
 const STORAGE_KEY = 'cosmonotes_data_v1';
 const DEFAULT_ENCODED = 'QVEuQWI4Uk42SzZQdGxLWDBvanlRdWR4MG5iSG9MNmhVYVZzOFFLdXdWdkNDX1VManhZMXc=';
@@ -32,13 +33,61 @@ export const storageClient = {
     return storageClient.getData().notes || [];
   },
 
-  saveNote: (note) => {
+  // Sincronizza note dal Cloud per l'utente corrente
+  syncFromCloud: async (userId) => {
+    if (!userId) return storageClient.getAllNotes();
+    try {
+      const notesCol = collection(db, 'users', userId, 'notes');
+      const snapshot = await getDocs(notesCol);
+      const cloudNotes = [];
+      snapshot.forEach(d => {
+        cloudNotes.push(d.data());
+      });
+
+      cloudNotes.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      const data = storageClient.getData();
+      data.notes = cloudNotes;
+
+      // Aggiorna topics
+      const topicMap = {};
+      data.notes.forEach(n => {
+        const t = n.topic || 'Generale';
+        if (!topicMap[t]) {
+          topicMap[t] = { name: t, color: n.topicColor || '#38bdf8', noteCount: 0, subtopics: new Set() };
+        }
+        topicMap[t].noteCount++;
+        (n.subtopics || []).forEach(st => topicMap[t].subtopics.add(st));
+      });
+
+      data.topics = Object.values(topicMap).map(t => ({
+        name: t.name,
+        color: t.color,
+        noteCount: t.noteCount,
+        subtopics: Array.from(t.subtopics)
+      }));
+
+      storageClient.saveData(data);
+      return cloudNotes;
+    } catch (e) {
+      console.warn('Cloud sync offline fallback:', e.message);
+      return storageClient.getAllNotes();
+    }
+  },
+
+  saveNote: async (note, userId = null) => {
     const data = storageClient.getData();
     const index = data.notes.findIndex(n => n.id === note.id);
+    const updatedNote = {
+      ...note,
+      createdAt: note.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
     if (index >= 0) {
-      data.notes[index] = { ...data.notes[index], ...note, updatedAt: new Date().toISOString() };
+      data.notes[index] = { ...data.notes[index], ...updatedNote };
     } else {
-      data.notes.unshift({ ...note, createdAt: note.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() });
+      data.notes.unshift(updatedNote);
     }
 
     // Aggiorna topics
@@ -60,10 +109,21 @@ export const storageClient = {
     }));
 
     storageClient.saveData(data);
-    return note;
+
+    // Salva sul Cloud Firestore se loggato
+    if (userId) {
+      try {
+        const noteDoc = doc(db, 'users', userId, 'notes', note.id);
+        await setDoc(noteDoc, updatedNote);
+      } catch (err) {
+        console.warn('Cloud save fallback to local:', err.message);
+      }
+    }
+
+    return updatedNote;
   },
 
-  deleteNote: (noteId) => {
+  deleteNote: async (noteId, userId = null) => {
     const data = storageClient.getData();
     data.notes = data.notes.filter(n => n.id !== noteId);
     
@@ -86,6 +146,15 @@ export const storageClient = {
     }));
 
     storageClient.saveData(data);
+
+    if (userId) {
+      try {
+        const noteDoc = doc(db, 'users', userId, 'notes', noteId);
+        await deleteDoc(noteDoc);
+      } catch (err) {
+        console.warn('Cloud delete fallback to local:', err.message);
+      }
+    }
   },
 
   getGraphData: () => {
@@ -150,7 +219,7 @@ export const storageClient = {
             spacing: { after: 300 }
           }),
           new Paragraph({
-            text: 'Sintesi & Concetti Chiave:',
+            text: 'Sintesi Esecutiva (AI):',
             heading: HeadingLevel.HEADING_2,
             spacing: { before: 200, after: 100 }
           }),
@@ -158,11 +227,19 @@ export const storageClient = {
             text: note.summary || 'Nessuna sintesi disponibile',
             spacing: { after: 300 }
           }),
+          ...(note.keyPoints && note.keyPoints.length > 0 ? [
+            new Paragraph({
+              text: 'Punti Chiave:',
+              heading: HeadingLevel.HEADING_3,
+              spacing: { before: 150, after: 80 }
+            }),
+            ...note.keyPoints.map(p => new Paragraph({ text: `• ${p}`, spacing: { after: 80 } }))
+          ] : []),
           ...(note.content ? [
             new Paragraph({
               text: 'Trascrizione / Testo Completo:',
               heading: HeadingLevel.HEADING_2,
-              spacing: { before: 200, after: 100 }
+              spacing: { before: 250, after: 100 }
             }),
             new Paragraph({
               text: note.content,

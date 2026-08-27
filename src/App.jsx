@@ -7,7 +7,12 @@ import {
   LayoutGrid, 
   Compass, 
   Search, 
-  X
+  X,
+  LogIn,
+  LogOut,
+  ShieldCheck,
+  Cloud,
+  CloudCheck
 } from 'lucide-react';
 
 import Constellation2D from './components/Constellation2D';
@@ -17,11 +22,17 @@ import TopicSummaryView from './components/TopicSummaryView';
 import TextNoteModal from './components/TextNoteModal';
 import SettingsModal from './components/SettingsModal';
 import ListView from './components/ListView';
+import AuthModal from './components/AuthModal';
 
 import { storageClient } from './services/storageClient';
 import { processTextNoteClient, processAudioNoteClient } from './services/geminiClient';
+import { auth, onAuthStateChanged, signOut } from './services/firebase';
 
 export default function App() {
+  const [currentUser, setCurrentUser] = useState(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+
   const [notes, setNotes] = useState([]);
   const [topics, setTopics] = useState([]);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
@@ -47,17 +58,47 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const refreshData = useCallback(() => {
+  const refreshData = useCallback(async () => {
+    if (currentUser) {
+      await storageClient.syncFromCloud(currentUser.uid);
+    }
     const graph = storageClient.getGraphData();
     const notesList = storageClient.getAllNotes();
     setGraphData(graph);
     setTopics(graph.topics || []);
     setNotes(notesList);
+  }, [currentUser]);
+
+  // Listen to Firebase Auth state
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      if (user) {
+        storageClient.syncFromCloud(user.uid).then(() => {
+          const graph = storageClient.getGraphData();
+          const notesList = storageClient.getAllNotes();
+          setGraphData(graph);
+          setTopics(graph.topics || []);
+          setNotes(notesList);
+        });
+      } else {
+        const graph = storageClient.getGraphData();
+        const notesList = storageClient.getAllNotes();
+        setGraphData(graph);
+        setTopics(graph.topics || []);
+        setNotes(notesList);
+      }
+    });
+    return () => unsubscribe();
   }, []);
 
-  useEffect(() => {
+  const handleLogout = async () => {
+    await signOut(auth);
+    setCurrentUser(null);
+    setShowUserMenu(false);
+    showToast('🚪 Disconnesso dal Cloud');
     refreshData();
-  }, [refreshData]);
+  };
 
   // Handle Save Voice Note
   const handleSaveAudio = async (audioBlob) => {
@@ -80,13 +121,13 @@ export default function App() {
         createdAt: new Date().toISOString()
       };
 
-      storageClient.saveNote(newNote);
-      showToast('✨ Nota vocale salvata e analizzata dall\'AI!');
+      await storageClient.saveNote(newNote, currentUser?.uid);
+      showToast('✨ Appunto vocale elaborato e sincronizzato!');
       setShowVoiceModal(false);
-      refreshData();
+      await refreshData();
       setSelectedNote(newNote);
     } catch (e) {
-      showToast(`❌ Errore AI: ${e.message || 'Controlla la chiave API'}`);
+      showToast(`❌ Errore AI: ${e.message || 'Errore durante l\'elaborazione'}`);
     } finally {
       setIsProcessing(false);
     }
@@ -113,25 +154,25 @@ export default function App() {
         createdAt: new Date().toISOString()
       };
 
-      storageClient.saveNote(newNote);
-      showToast('✨ Appunto inserito nella tua costellazione!');
+      await storageClient.saveNote(newNote, currentUser?.uid);
+      showToast('✨ Appunto inserito e sincronizzato!');
       setShowTextModal(false);
-      refreshData();
+      await refreshData();
       setSelectedNote(newNote);
     } catch (e) {
-      showToast(`❌ Errore AI: ${e.message || 'Controlla la chiave API'}`);
+      showToast(`❌ Errore AI: ${e.message || 'Errore durante l\'elaborazione'}`);
     } finally {
       setIsProcessing(false);
     }
   };
 
   // Handle Delete Note
-  const handleDeleteNote = (noteId) => {
+  const handleDeleteNote = async (noteId) => {
     if (!window.confirm('Sei sicuro di voler eliminare questo appunto?')) return;
-    storageClient.deleteNote(noteId);
+    await storageClient.deleteNote(noteId, currentUser?.uid);
     showToast('🗑️ Appunto eliminato');
     if (selectedNote?.id === noteId) setSelectedNote(null);
-    refreshData();
+    await refreshData();
   };
 
   // Handle Node selection from Graph
@@ -210,7 +251,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Actions */}
+        {/* Actions & User Sync */}
         <div className="flex items-center gap-1.5 sm:gap-3">
           
           {/* View Toggle */}
@@ -251,6 +292,48 @@ export default function App() {
             <span className="hidden sm:inline">Voce</span>
           </button>
 
+          {/* User Account / Cloud Sync Pill */}
+          {currentUser ? (
+            <div className="relative">
+              <button
+                onClick={() => setShowUserMenu(!showUserMenu)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-800/60 text-cyan-300 text-xs font-semibold transition"
+              >
+                <div className="w-5 h-5 rounded-full bg-cyan-400/20 flex items-center justify-center text-[10px] font-bold text-cyan-300">
+                  {currentUser.email ? currentUser.email[0].toUpperCase() : 'U'}
+                </div>
+                <span className="max-w-[80px] sm:max-w-[120px] truncate hidden sm:inline">{currentUser.displayName || currentUser.email}</span>
+              </button>
+
+              {showUserMenu && (
+                <div className="absolute right-0 top-11 w-60 glass-panel rounded-2xl border border-slate-700 shadow-2xl p-2 z-50 animate-fadeIn">
+                  <div className="px-3 py-2 border-b border-slate-800">
+                    <p className="text-[11px] text-slate-400">Account Cloud attivo:</p>
+                    <p className="text-xs font-bold text-cyan-300 truncate">{currentUser.email}</p>
+                    <p className="text-[10px] text-emerald-400 flex items-center gap-1 mt-1 font-medium">
+                      <ShieldCheck className="w-3 h-3" /> Sincronizzato con Cellulare & PC
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="w-full mt-1 flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-rose-300 hover:bg-rose-950/40 transition"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Esci dall'account</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowAuthModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-space-800 hover:bg-space-700 border border-cyan-500/50 text-cyan-300 text-xs font-bold transition shadow-sm"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Sincronizza Cloud</span>
+            </button>
+          )}
+
           {/* Settings Button */}
           <button
             onClick={() => setShowSettingsModal(true)}
@@ -285,6 +368,18 @@ export default function App() {
           />
         )}
       </main>
+
+      {/* Auth Modal */}
+      {showAuthModal && (
+        <AuthModal
+          onClose={() => setShowAuthModal(false)}
+          onAuthSuccess={(user) => {
+            setCurrentUser(user);
+            showToast(`👋 Benvenuto, ${user.displayName || user.email}! I tuoi appunti sono sincronizzati.`);
+            refreshData();
+          }}
+        />
+      )}
 
       {/* Voice Recorder Modal */}
       {showVoiceModal && (
@@ -321,11 +416,11 @@ export default function App() {
           onClose={() => setSelectedNote(null)}
           onDelete={handleDeleteNote}
           existingTopics={topics}
-          onUpdate={(updated) => {
-            storageClient.saveNote(updated);
+          onUpdate={async (updated) => {
+            await storageClient.saveNote(updated, currentUser?.uid);
             setSelectedNote(updated);
-            refreshData();
-            showToast('💾 Appunto aggiornato!');
+            await refreshData();
+            showToast('💾 Appunto aggiornato e sincronizzato!');
           }}
           onDownloadDocx={() => storageClient.downloadDocx(selectedNote)}
         />

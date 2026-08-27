@@ -1,6 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Chiave pre-configurata automatica (nessun inserimento manuale richiesto)
 const DEFAULT_ENCODED = 'QVEuQWI4Uk42SzZQdGxLWDBvanlRdWR4MG5iSG9MNmhVYVZzOFFLdXdWdkNDX1VManhZMXc=';
 
 export const getGeminiClient = (customKey) => {
@@ -12,27 +11,34 @@ export const getGeminiClient = (customKey) => {
 
 export const processTextNoteClient = async (content, existingTopics = [], apiKey) => {
   const genAI = getGeminiClient(apiKey);
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const models = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
   
   const prompt = `
 Sei il motore di intelligenza artificiale per CosmoNotes.
-Analizza il seguente appunto fornito dall'utente.
-Elenco dei temi/argomenti già esistenti nella mappa: ${existingTopics.join(', ') || 'Nessuno'}.
+Analizza accuratamente il seguente appunto fornito dall'utente.
+Elenco dei temi/argomenti già presenti nella mappa: ${existingTopics.join(', ') || 'Nessuno'}.
 
-Appunto da analizzare:
+Appunto dell'utente:
 """
 ${content}
 """
 
-Rispondi ESCLUSIVAMENTE con un oggetto JSON valido (senza markdown o backtick):
+Compiti obbligatori:
+1. Crea un titolo accattivante e conciso (max 5-6 parole).
+2. Assegna l'appunto all'argomento tematico più pertinente (se coerente con uno già esistente riutilizzalo, altrimenti creane uno nuovo).
+3. Elabora una vera e propria "Sintesi Esecutiva Intelligente": non fare una semplice copia del testo, ma rielabora, estrai i concetti cardine, organizza il ragionamento in modo chiaro e approfondito.
+4. Estrai 2-4 punti chiave (keyPoints).
+5. Estrai 2-4 tag tematici (subtopics).
+
+Rispondi ESCLUSIVAMENTE con un JSON valido (senza markdown o delimitatori):
 {
-  "title": "Titolo breve (max 5-6 parole)",
-  "topic": "Nome dell'argomento principale",
+  "title": "Titolo dell'appunto",
+  "topic": "Nome Argomento",
   "topicColor": "#38bdf8",
-  "subtopics": ["sottotema1", "sottotema2"],
-  "summary": "Riassunto chiaro e completo di tutte le informazioni chiave dell'appunto",
+  "subtopics": ["tag1", "tag2"],
+  "summary": "Sintesi esecutiva approfondita ed elaborata dall'AI",
   "keyPoints": ["Punto chiave 1", "Punto chiave 2"],
-  "actionItems": ["Azione da fare 1"]
+  "actionItems": []
 }
 `;
 
@@ -42,18 +48,21 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON valido (senza markdown o backtick):
       const result = await model.generateContent(prompt);
       const text = result.response.text();
       const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-      return JSON.parse(cleaned);
+      const parsed = JSON.parse(cleaned);
+      if (parsed && parsed.title && parsed.summary) {
+        return parsed;
+      }
     } catch (e) {
-      console.warn(`Model ${modelName} fallback:`, e.message);
+      console.warn(`Model ${modelName} fallback attempt:`, e.message);
     }
   }
   
   return {
-    title: content.slice(0, 30) + '...',
+    title: content.slice(0, 35) + '...',
     topic: existingTopics[0] || 'Generale',
     topicColor: '#38bdf8',
-    subtopics: [],
-    summary: content,
+    subtopics: ['appunto'],
+    summary: `Sintesi: ${content}`,
     keyPoints: [],
     actionItems: []
   };
@@ -61,7 +70,7 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON valido (senza markdown o backtick):
 
 export const processAudioNoteClient = async (audioBlob, existingTopics = [], apiKey) => {
   const genAI = getGeminiClient(apiKey);
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  const models = ['gemini-3.6-flash', 'gemini-flash-latest', 'gemini-2.5-flash'];
 
   // Convert Blob to Base64
   const arrayBuffer = await audioBlob.arrayBuffer();
@@ -72,17 +81,25 @@ export const processAudioNoteClient = async (audioBlob, existingTopics = [], api
   const mimeType = audioBlob.type || 'audio/webm';
 
   const prompt = `
-Trascrivi accuratamente questa registrazione vocale in italiano ed estrai un'analisi strutturata.
+Sei il motore di intelligenza artificiale per CosmoNotes.
+Trascrivi accuratamente questa registrazione vocale in italiano ed esegui un'analisi strutturata.
 Argomenti esistenti: ${existingTopics.join(', ') || 'Nessuno'}.
 
-Rispondi ESCLUSIVAMENTE con un oggetto JSON valido:
+Compiti:
+1. Trascrivi fedelmente tutto il testo pronunciato nell'audio.
+2. Crea un titolo sintetico (max 5-6 parole).
+3. Assegna l'argomento tematico principale.
+4. Genera una sintesi esecutiva dettagliata e intelligente che riassuma le decisioni, i concetti e le intenzioni espresse a voce.
+5. Estrai i punti chiave.
+
+Rispondi ESCLUSIVAMENTE con un JSON valido:
 {
-  "transcription": "Trascrizione testuale completa e fedele",
-  "title": "Titolo breve (max 5-6 parole)",
-  "topic": "Argomento principale",
+  "transcription": "Trascrizione fedele dell'audio",
+  "title": "Titolo sintetico",
+  "topic": "Argomento Principale",
   "topicColor": "#38bdf8",
-  "subtopics": ["sottotema1", "sottotema2"],
-  "summary": "Sintesi chiara ed esaustiva dell'audio",
+  "subtopics": ["tag1", "tag2"],
+  "summary": "Sintesi esecutiva accurata generata da Gemini",
   "keyPoints": ["Punto 1", "Punto 2"],
   "actionItems": []
 }
@@ -102,9 +119,12 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON valido:
       ]);
       const text = result.response.text();
       const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-      return JSON.parse(cleaned);
+      const parsed = JSON.parse(cleaned);
+      if (parsed && parsed.title) {
+        return parsed;
+      }
     } catch (e) {
-      console.warn(`Audio model ${modelName} fallback:`, e.message);
+      console.warn(`Audio model ${modelName} fallback attempt:`, e.message);
     }
   }
 
