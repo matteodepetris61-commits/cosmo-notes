@@ -1,6 +1,7 @@
 import { Document, Paragraph, TextRun, HeadingLevel, Packer } from 'docx';
 
 const STORAGE_KEY = 'cosmonotes_data_v1';
+const DEFAULT_ENCODED = 'QVEuQWI4Uk42SzZQdGxLWDBvanlRdWR4MG5iSG9MNmhVYVZzOFFLdXdWdkNDX1VManhZMXc=';
 
 export const storageClient = {
   getData: () => {
@@ -14,7 +15,7 @@ export const storageClient = {
       notes: [],
       topics: [],
       settings: {
-        apiKey: import.meta.env.VITE_GEMINI_API_KEY || ''
+        apiKey: typeof atob !== 'undefined' ? atob(DEFAULT_ENCODED) : ''
       }
     };
   },
