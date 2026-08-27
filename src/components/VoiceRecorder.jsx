@@ -101,10 +101,18 @@ export default function VoiceRecorder({ onSaveAudio, isProcessing }) {
       analyserRef.current = analyser;
       dataArrayRef.current = dataArray;
 
-      // Setup MediaRecorder
-      const options = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? { mimeType: 'audio/webm;codecs=opus' }
-        : {};
+      // Setup MediaRecorder with iOS / Safari & Android support
+      let mimeType = '';
+      if (typeof MediaRecorder.isTypeSupported === 'function') {
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          mimeType = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+          mimeType = 'audio/webm';
+        }
+      }
+      const options = mimeType ? { mimeType } : {};
       const recorder = new MediaRecorder(stream, options);
 
       recorder.ondataavailable = (e) => {

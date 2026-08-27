@@ -271,7 +271,7 @@ export default function NoteDetailModal({ note, onClose, onDelete, onUpdate, exi
                 {isEditing ? (
                   <button
                     type="button"
-                    onClick={handleReanalyzeWithAI}
+                    onClick={handleReanalyze}
                     disabled={isReanalyzing}
                     className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-[11px] font-semibold border border-cyan-500/40 transition"
                   >
