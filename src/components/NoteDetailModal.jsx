@@ -22,6 +22,8 @@ import {
   Type,
   BookOpen
 } from 'lucide-react';
+import { storageClient } from '../services/storageClient';
+import { processTextNoteClient } from '../services/geminiClient';
 
 export default function NoteDetailModal({ note, onClose, onDelete, onUpdate, existingTopics = [] }) {
   const [copied, setCopied] = useState(false);
@@ -64,10 +66,15 @@ export default function NoteDetailModal({ note, onClose, onDelete, onUpdate, exi
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleDownloadDocx = () => {
+  const handleDownloadDocx = async () => {
     setIsDownloading(true);
-    window.location.href = `/api/notes/${fullData.id}/docx`;
-    setTimeout(() => setIsDownloading(false), 1500);
+    try {
+      await storageClient.downloadDocx(fullData);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   const handleAddTag = () => {
@@ -82,51 +89,40 @@ export default function NoteDetailModal({ note, onClose, onDelete, onUpdate, exi
     setSubtopics(subtopics.filter(t => t !== tagToRemove));
   };
 
-  const handleSave = async () => {
+  const handleSave = () => {
     setIsSaving(true);
     try {
-      const res = await fetch(`/api/notes/${fullData.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title,
-          topic,
-          summary,
-          content,
-          subtopics
-        })
-      });
-      const updated = await res.json();
-      if (res.ok) {
-        setIsEditing(false);
-        if (onUpdate) onUpdate(updated);
-      }
+      const updated = {
+        ...fullData,
+        title,
+        topic,
+        summary,
+        content,
+        subtopics
+      };
+      storageClient.saveNote(updated);
+      onUpdate(updated);
+      setIsEditing(false);
     } catch (err) {
-      console.error('Error updating note:', err);
+      console.error(err);
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleReanalyzeWithAI = async () => {
-    if (!content.trim()) return;
+  const handleReanalyze = async () => {
     setIsReanalyzing(true);
     try {
-      const res = await fetch(`/api/notes/${fullData.id}/reanalyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content })
-      });
-      const updated = await res.json();
-      if (res.ok) {
-        setTitle(updated.title || title);
-        setTopic(updated.topic || topic);
-        setSummary(updated.summary || summary);
-        setSubtopics(updated.subtopics || subtopics);
-        if (onUpdate) onUpdate(updated);
+      const existing = existingTopics.map(t => t.name || t);
+      const re = await processTextNoteClient(content, existing);
+      setTitle(re.title || title);
+      setTopic(re.topic || topic);
+      setSummary(re.summary || summary);
+      if (re.subtopics && re.subtopics.length > 0) {
+        setSubtopics(re.subtopics);
       }
     } catch (e) {
-      console.error('Error reanalyzing:', e);
+      alert('Errore durante la ri-analisi AI: ' + e.message);
     } finally {
       setIsReanalyzing(false);
     }

@@ -7,11 +7,7 @@ import {
   LayoutGrid, 
   Compass, 
   Search, 
-  X, 
-  User,
-  LogIn,
-  LogOut,
-  ShieldCheck
+  X
 } from 'lucide-react';
 
 import Constellation2D from './components/Constellation2D';
@@ -21,25 +17,15 @@ import TopicSummaryView from './components/TopicSummaryView';
 import TextNoteModal from './components/TextNoteModal';
 import SettingsModal from './components/SettingsModal';
 import ListView from './components/ListView';
-import AuthModal from './components/AuthModal';
+
+import { storageClient } from './services/storageClient';
+import { processTextNoteClient, processAudioNoteClient } from './services/geminiClient';
 
 export default function App() {
   const [notes, setNotes] = useState([]);
   const [topics, setTopics] = useState([]);
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
-  const [viewMode, setViewMode] = useState('graph'); // 'graph' | 'list'
-  
-  // Auth state
-  const [currentUser, setCurrentUser] = useState(() => {
-    try {
-      const saved = localStorage.getItem('cosmonotes_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [viewMode, setViewMode] = useState('graph');
 
   // Modals & Panels
   const [showVoiceModal, setShowVoiceModal] = useState(false);
@@ -61,68 +47,46 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Helper per chiamate API autenticate
-  const authFetch = useCallback(async (url, options = {}) => {
-    const token = localStorage.getItem('cosmonotes_token');
-    const headers = {
-      ...(options.headers || {}),
-      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-    };
-    return fetch(url, { ...options, headers });
+  const refreshData = useCallback(() => {
+    const graph = storageClient.getGraphData();
+    const notesList = storageClient.getAllNotes();
+    setGraphData(graph);
+    setTopics(graph.topics || []);
+    setNotes(notesList);
   }, []);
-
-  // Fetch Graph and Data from Backend
-  const refreshData = useCallback(async () => {
-    try {
-      const [graphRes, notesRes] = await Promise.all([
-        authFetch('/api/graph'),
-        authFetch('/api/notes')
-      ]);
-      const graph = await graphRes.json();
-      const notesList = await notesRes.json();
-
-      setGraphData(graph);
-      setTopics(graph.topics || []);
-      setNotes(Array.isArray(notesList) ? notesList : []);
-    } catch (err) {
-      console.error('Error fetching data:', err);
-    }
-  }, [authFetch]);
 
   useEffect(() => {
     refreshData();
-  }, [refreshData, currentUser]);
-
-  const handleLogout = () => {
-    localStorage.removeItem('cosmonotes_token');
-    localStorage.removeItem('cosmonotes_user');
-    setCurrentUser(null);
-    setShowUserMenu(false);
-    showToast('🚪 Disconnesso dal tuo spazio privato');
-  };
+  }, [refreshData]);
 
   // Handle Save Voice Note
-  const handleSaveAudio = async (audioBlobOrFile) => {
+  const handleSaveAudio = async (audioBlob) => {
     setIsProcessing(true);
-    const formData = new FormData();
-    formData.append('audio', audioBlobOrFile, 'recording.webm');
-
     try {
-      const res = await authFetch('/api/notes/audio', {
-        method: 'POST',
-        body: formData
-      });
-      const newNote = await res.json();
-      if (res.ok) {
-        showToast('✨ Nota vocale salvata nel tuo spazio privato!');
-        setShowVoiceModal(false);
-        await refreshData();
-        setSelectedNote(newNote);
-      } else {
-        showToast(`❌ Errore: ${newNote.error || 'Impossibile elaborare nota vocale'}`);
-      }
+      const existingTopics = topics.map(t => t.name);
+      const aiAnalysis = await processAudioNoteClient(audioBlob, existingTopics);
+      
+      const newNote = {
+        id: `note-${Date.now()}`,
+        type: 'audio',
+        content: aiAnalysis.transcription || 'Registrazione vocale',
+        title: aiAnalysis.title || 'Nuovo Appunto Vocale',
+        summary: aiAnalysis.summary || aiAnalysis.transcription,
+        topic: aiAnalysis.topic || 'Generale',
+        topicColor: aiAnalysis.topicColor || '#38bdf8',
+        subtopics: aiAnalysis.subtopics || [],
+        keyPoints: aiAnalysis.keyPoints || [],
+        actionItems: aiAnalysis.actionItems || [],
+        createdAt: new Date().toISOString()
+      };
+
+      storageClient.saveNote(newNote);
+      showToast('✨ Nota vocale salvata e analizzata dall\'AI!');
+      setShowVoiceModal(false);
+      refreshData();
+      setSelectedNote(newNote);
     } catch (e) {
-      showToast('❌ Errore di connessione');
+      showToast(`❌ Errore AI: ${e.message || 'Controlla la chiave API'}`);
     } finally {
       setIsProcessing(false);
     }
@@ -132,40 +96,42 @@ export default function App() {
   const handleSaveText = async (content, manualTopic) => {
     setIsProcessing(true);
     try {
-      const res = await authFetch('/api/notes/text', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, manualTopic })
-      });
-      const newNote = await res.json();
-      if (res.ok) {
-        showToast('✨ Nota testuale inserita nel tuo spazio!');
-        setShowTextModal(false);
-        await refreshData();
-        setSelectedNote(newNote);
-      } else {
-        showToast(`❌ Errore: ${newNote.error || 'Impossibile salvare la nota'}`);
-      }
+      const existingTopics = topics.map(t => t.name);
+      const aiAnalysis = await processTextNoteClient(content, existingTopics);
+      
+      const newNote = {
+        id: `note-${Date.now()}`,
+        type: 'text',
+        content: content.trim(),
+        title: aiAnalysis.title || 'Nuovo Appunto',
+        summary: aiAnalysis.summary || content,
+        topic: manualTopic || aiAnalysis.topic || 'Generale',
+        topicColor: aiAnalysis.topicColor || '#38bdf8',
+        subtopics: aiAnalysis.subtopics || [],
+        keyPoints: aiAnalysis.keyPoints || [],
+        actionItems: aiAnalysis.actionItems || [],
+        createdAt: new Date().toISOString()
+      };
+
+      storageClient.saveNote(newNote);
+      showToast('✨ Appunto inserito nella tua costellazione!');
+      setShowTextModal(false);
+      refreshData();
+      setSelectedNote(newNote);
     } catch (e) {
-      showToast('❌ Errore di connessione');
+      showToast(`❌ Errore AI: ${e.message || 'Controlla la chiave API'}`);
     } finally {
       setIsProcessing(false);
     }
   };
 
   // Handle Delete Note
-  const handleDeleteNote = async (noteId) => {
-    if (!window.confirm('Sei sicuro di voler eliminare questa nota?')) return;
-    try {
-      const res = await authFetch(`/api/notes/${noteId}`, { method: 'DELETE' });
-      if (res.ok) {
-        showToast('🗑️ Nota eliminata con successo');
-        if (selectedNote?.id === noteId) setSelectedNote(null);
-        await refreshData();
-      }
-    } catch (e) {
-      showToast('Errore durante l\'eliminazione');
-    }
+  const handleDeleteNote = (noteId) => {
+    if (!window.confirm('Sei sicuro di voler eliminare questo appunto?')) return;
+    storageClient.deleteNote(noteId);
+    showToast('🗑️ Appunto eliminato');
+    if (selectedNote?.id === noteId) setSelectedNote(null);
+    refreshData();
   };
 
   // Handle Node selection from Graph
@@ -205,7 +171,7 @@ export default function App() {
                 PRO
               </span>
             </h1>
-            <p className="text-[10px] text-slate-400 hidden md:block">Knowledge Base a Costellazione</p>
+            <p className="text-[10px] text-slate-400 hidden md:block">Costellazione di Appunti & Sintesi AI</p>
           </div>
         </div>
 
@@ -244,7 +210,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Actions & User Menu */}
+        {/* Actions */}
         <div className="flex items-center gap-1.5 sm:gap-3">
           
           {/* View Toggle */}
@@ -285,52 +251,10 @@ export default function App() {
             <span className="hidden sm:inline">Voce</span>
           </button>
 
-          {/* User Account / Login Button */}
-          {currentUser ? (
-            <div className="relative">
-              <button
-                onClick={() => setShowUserMenu(!showUserMenu)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-cyan-950/60 hover:bg-cyan-900/60 border border-cyan-800/60 text-cyan-300 text-xs font-semibold transition"
-              >
-                <div className="w-5 h-5 rounded-full bg-cyan-400/20 flex items-center justify-center text-[10px] font-bold text-cyan-300">
-                  {currentUser.email.slice(0, 1).toUpperCase()}
-                </div>
-                <span className="max-w-[90px] sm:max-w-[120px] truncate hidden sm:inline">{currentUser.email}</span>
-              </button>
-
-              {showUserMenu && (
-                <div className="absolute right-0 top-11 w-56 glass-panel rounded-2xl border border-slate-700 shadow-2xl p-2 z-50 animate-fadeIn">
-                  <div className="px-3 py-2 border-b border-slate-800">
-                    <p className="text-[11px] text-slate-400">Accesso effettuato con:</p>
-                    <p className="text-xs font-bold text-cyan-300 truncate">{currentUser.email}</p>
-                    <p className="text-[10px] text-emerald-400 flex items-center gap-1 mt-1 font-medium">
-                      <ShieldCheck className="w-3 h-3" /> Spazio 100% Privato
-                    </p>
-                  </div>
-                  <button
-                    onClick={handleLogout}
-                    className="w-full mt-1 flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-rose-300 hover:bg-rose-950/40 transition"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    <span>Esci dall'account</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : (
-            <button
-              onClick={() => setShowAuthModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-space-800 hover:bg-space-700 border border-slate-700 text-cyan-300 text-xs font-bold transition"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Accedi con Gmail</span>
-            </button>
-          )}
-
           {/* Settings Button */}
           <button
             onClick={() => setShowSettingsModal(true)}
-            title="Impostazioni Workspace & API"
+            title="Impostazioni & Chiave Gemini"
             className="p-2 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-space-800 transition border border-transparent hover:border-slate-700/60"
           >
             <Settings className="w-4 h-4" />
@@ -361,17 +285,6 @@ export default function App() {
           />
         )}
       </main>
-
-      {/* Auth Modal */}
-      {showAuthModal && (
-        <AuthModal
-          onClose={() => setShowAuthModal(false)}
-          onAuthSuccess={(user) => {
-            setCurrentUser(user);
-            showToast(`👋 Benvenuto nel tuo spazio privato, ${user.name || user.email}!`);
-          }}
-        />
-      )}
 
       {/* Voice Recorder Modal */}
       {showVoiceModal && (
@@ -408,11 +321,13 @@ export default function App() {
           onClose={() => setSelectedNote(null)}
           onDelete={handleDeleteNote}
           existingTopics={topics}
-          onUpdate={async (updated) => {
+          onUpdate={(updated) => {
+            storageClient.saveNote(updated);
             setSelectedNote(updated);
-            await refreshData();
-            showToast('💾 Nota aggiornata e file Word sincronizzato!');
+            refreshData();
+            showToast('💾 Appunto aggiornato!');
           }}
+          onDownloadDocx={() => storageClient.downloadDocx(selectedNote)}
         />
       )}
 
