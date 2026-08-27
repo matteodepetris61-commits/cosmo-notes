@@ -1,13 +1,34 @@
 import { Document, Paragraph, TextRun, HeadingLevel, Packer } from 'docx';
-import { neon } from '@neondatabase/serverless';
 
 const STORAGE_KEY = 'cosmonotes_data_v1';
 const USER_KEY = 'cosmonotes_active_user';
 const DEFAULT_ENCODED = 'QVEuQWI4Uk42SzZQdGxLWDBvanlRdWR4MG5iSG9MNmhVYVZzOFFLdXdWdkNDX1VManhZMXc=';
 
-// Connessione Neon Cloud Database
-const DB_URL = 'postgresql://neondb_owner:npg_WNRz2nw4GPCY@ep-quiet-king-a6datcmc-pooler.us-west-2.aws.neon.tech/neondb?sslmode=require';
-const sql = neon(DB_URL);
+// Connessione Diretta Cloud Database Neon (HTTP REST API)
+const DB_CONN = 'postgresql://neondb_owner:npg_WNRz2nw4GPCY@ep-quiet-king-a6datcmc-pooler.us-west-2.aws.neon.tech/neondb?sslmode=require';
+const ENDPOINT = 'https://ep-quiet-king-a6datcmc-pooler.us-west-2.aws.neon.tech/sql';
+
+async function runNeonQuery(query, params = []) {
+  try {
+    const res = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Neon-Connection-String': DB_CONN
+      },
+      body: JSON.stringify({ query, params })
+    });
+    if (!res.ok) {
+      console.warn('Neon HTTP query status:', res.status);
+      return [];
+    }
+    const data = await res.json();
+    return data.rows || [];
+  } catch (err) {
+    console.warn('Neon query network error:', err.message);
+    return [];
+  }
+}
 
 export const storageClient = {
   getActiveUser: () => {
@@ -56,36 +77,42 @@ export const storageClient = {
     if (!user) return storageClient.getAllNotes();
 
     try {
-      const rows = await sql`SELECT data FROM notes WHERE user_id = ${user.trim().toLowerCase()} ORDER BY updated_at DESC`;
-      const cloudNotes = rows.map(r => r.data).filter(Boolean);
+      const userId = user.trim().toLowerCase();
+      const rows = await runNeonQuery(
+        'SELECT data FROM notes WHERE user_id = $1 ORDER BY updated_at DESC',
+        [userId]
+      );
 
-      const data = storageClient.getData();
-      data.notes = cloudNotes;
+      if (rows && rows.length > 0) {
+        const cloudNotes = rows.map(r => r.data).filter(Boolean);
+        const data = storageClient.getData();
+        data.notes = cloudNotes;
 
-      // Ricalcola argomenti tematici
-      const topicMap = {};
-      data.notes.forEach(n => {
-        const t = n.topic || 'Generale';
-        if (!topicMap[t]) {
-          topicMap[t] = { name: t, color: n.topicColor || '#38bdf8', noteCount: 0, subtopics: new Set() };
-        }
-        topicMap[t].noteCount++;
-        (n.subtopics || []).forEach(st => topicMap[t].subtopics.add(st));
-      });
+        // Ricalcola argomenti tematici
+        const topicMap = {};
+        data.notes.forEach(n => {
+          const t = n.topic || 'Generale';
+          if (!topicMap[t]) {
+            topicMap[t] = { name: t, color: n.topicColor || '#38bdf8', noteCount: 0, subtopics: new Set() };
+          }
+          topicMap[t].noteCount++;
+          (n.subtopics || []).forEach(st => topicMap[t].subtopics.add(st));
+        });
 
-      data.topics = Object.values(topicMap).map(t => ({
-        name: t.name,
-        color: t.color,
-        noteCount: t.noteCount,
-        subtopics: Array.from(t.subtopics)
-      }));
+        data.topics = Object.values(topicMap).map(t => ({
+          name: t.name,
+          color: t.color,
+          noteCount: t.noteCount,
+          subtopics: Array.from(t.subtopics)
+        }));
 
-      storageClient.saveData(data);
-      return cloudNotes;
+        storageClient.saveData(data);
+        return cloudNotes;
+      }
     } catch (e) {
-      console.warn('Cloud sync offline fallback:', e.message);
-      return storageClient.getAllNotes();
+      console.warn('Cloud sync error:', e.message);
     }
+    return storageClient.getAllNotes();
   },
 
   saveNote: async (note, userEmail = null) => {
@@ -124,18 +151,15 @@ export const storageClient = {
 
     storageClient.saveData(data);
 
-    // Salva nel Cloud Database
+    // Salva nel Cloud Database Neon istantaneamente
     if (user) {
-      try {
-        const userId = user.trim().toLowerCase();
-        await sql`
-          INSERT INTO notes (id, user_id, data, updated_at) 
-          VALUES (${note.id}, ${userId}, ${JSON.stringify(updatedNote)}, NOW())
-          ON CONFLICT (id) DO UPDATE SET data = ${JSON.stringify(updatedNote)}, updated_at = NOW()
-        `;
-      } catch (err) {
-        console.warn('Cloud save fallback to local:', err.message);
-      }
+      const userId = user.trim().toLowerCase();
+      await runNeonQuery(
+        `INSERT INTO notes (id, user_id, data, updated_at) 
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = $3, updated_at = NOW()`,
+        [note.id, userId, JSON.stringify(updatedNote)]
+      );
     }
 
     return updatedNote;
@@ -167,12 +191,8 @@ export const storageClient = {
     storageClient.saveData(data);
 
     if (user) {
-      try {
-        const userId = user.trim().toLowerCase();
-        await sql`DELETE FROM notes WHERE id = ${noteId} AND user_id = ${userId}`;
-      } catch (err) {
-        console.warn('Cloud delete fallback to local:', err.message);
-      }
+      const userId = user.trim().toLowerCase();
+      await runNeonQuery('DELETE FROM notes WHERE id = $1 AND user_id = $2', [noteId, userId]);
     }
   },
 
